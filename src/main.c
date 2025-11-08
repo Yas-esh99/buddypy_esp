@@ -1,4 +1,3 @@
-// src/main.c
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -26,17 +25,26 @@ extern void storage_init(void);
 #define SAMPLE_RATE 16000
 #define I2S_PORT I2S_NUM_0
 #define I2S_BCK 14
-#define I2S_WS  15
-#define I2S_SD  32
+#define I2S_WS 15
+#define I2S_SD 32
 
 // ======== WIFI CONFIG =========
 #define WIFI_SSID "M01s"
 #define WIFI_PASS "9924760032"
-#define SERVER_URL "http://192.168.178.32:8000/process"
+
+// Globals for dynamic URL
+static char device_ip[32] = {0};
+static char server_url[128] = {0};
+
+#define SERVER_IP "192.168.122.32" // your PC's fixed IP
+#define SERVER_PORT 8000
 
 // global i2s handle
 static i2s_chan_handle_t rx_handle = NULL;
 
+// --------------------------------------------------
+// I2S initialization
+// --------------------------------------------------
 static void init_i2s(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
@@ -50,10 +58,9 @@ static void init_i2s(void)
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = I2S_BCK,
-            .ws   = I2S_WS,
+            .ws = I2S_WS,
             .dout = I2S_GPIO_UNUSED,
-            .din  = I2S_SD
-        },
+            .din = I2S_SD},
     };
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));
@@ -61,20 +68,38 @@ static void init_i2s(void)
     ESP_LOGI(TAG, "✅ I2S initialized");
 }
 
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
+// --------------------------------------------------
+// WiFi event handler
+// --------------------------------------------------
+// --------------------------------------------------
+// WiFi event handler (auto-detects gateway IP)
+// --------------------------------------------------
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+    {
         esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    }
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
         ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
         esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    }
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        snprintf(device_ip, sizeof(device_ip), IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "✅ Got IP: %s", device_ip);
+
+        snprintf(server_url, sizeof(server_url), "http://%s:%d/process", SERVER_IP, SERVER_PORT);
+        ESP_LOGI(TAG, "🌐 Server URL set to: %s", server_url);
     }
 }
 
+// --------------------------------------------------
+// Initialize Wi-Fi
+// --------------------------------------------------
 static void init_wifi(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
@@ -88,20 +113,25 @@ static void init_wifi(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
-    wifi_config_t wifi_config = { 0 };
-    strncpy((char*)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid)-1);
-    strncpy((char*)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password)-1);
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "📶 Wi-Fi started, attempting connect to '%s'", WIFI_SSID);
+
+    ESP_LOGI(TAG, "📶 Wi-Fi started, connecting to '%s'", WIFI_SSID);
 }
 
+// --------------------------------------------------
+// Upload file using HTTP POST (multipart/form-data)
+// --------------------------------------------------
 static esp_err_t upload_file_http(const char *url, const char *path)
 {
     FILE *f = fopen(path, "rb");
-    if (!f) {
+    if (!f)
+    {
         ESP_LOGE(TAG, "Cannot open file %s", path);
         return ESP_FAIL;
     }
@@ -114,16 +144,15 @@ static esp_err_t upload_file_http(const char *url, const char *path)
     char start_part[512];
     char end_part[128];
 
-    // ✅ add leading CRLF and correct structure
     snprintf(start_part, sizeof(start_part),
              "--%s\r\n"
              "Content-Disposition: form-data; name=\"audio\"; filename=\"audio.raw\"\r\n"
              "Content-Type: application/octet-stream\r\n"
-             "\r\n",  // blank line after headers
+             "\r\n",
              boundary);
 
     snprintf(end_part, sizeof(end_part),
-             "\r\n--%s--\r\n", boundary); // CRLF before and after boundary
+             "\r\n--%s--\r\n", boundary);
 
     long total_size = strlen(start_part) + file_size + strlen(end_part);
 
@@ -134,7 +163,8 @@ static esp_err_t upload_file_http(const char *url, const char *path)
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
+    if (!client)
+    {
         fclose(f);
         return ESP_FAIL;
     }
@@ -145,28 +175,28 @@ static esp_err_t upload_file_http(const char *url, const char *path)
     esp_http_client_set_header(client, "Content-Type", content_type);
 
     esp_err_t err = esp_http_client_open(client, total_size);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         fclose(f);
         return err;
     }
 
-    // send header part
     esp_http_client_write(client, start_part, strlen(start_part));
 
-    // send file data
     uint8_t buffer[1024];
     size_t read;
-    while ((read = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+    while ((read = fread(buffer, 1, sizeof(buffer), f)) > 0)
+    {
         int written = esp_http_client_write(client, (const char *)buffer, read);
-        if (written < 0) {
+        if (written < 0)
+        {
             ESP_LOGE(TAG, "esp_http_client_write failed");
             break;
         }
     }
 
-    // send closing boundary
     esp_http_client_write(client, end_part, strlen(end_part));
 
     int status = esp_http_client_get_status_code(client);
@@ -177,34 +207,41 @@ static esp_err_t upload_file_http(const char *url, const char *path)
     return ESP_OK;
 }
 
+// --------------------------------------------------
+// Main task
+// --------------------------------------------------
 static void main_task(void *pv)
 {
     ESP_LOGI(TAG, "main_task starting...");
 
-    // initialize subsystems
-    storage_init();   // mount SD card (implemented in storage.c)
+    storage_init(); // mount SD card
     init_i2s();
     init_wifi();
 
-    ESP_LOGI(TAG, "Initialization done, starting recording...");
-    // wait a bit for WiFi
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGI(TAG, "Initialization done, waiting for Wi-Fi...");
+    vTaskDelay(pdMS_TO_TICKS(4000)); // wait for IP assignment
 
-    // create path on SD card
+    if (strlen(server_url) == 0)
+    {
+        ESP_LOGW(TAG, "⚠️ No IP yet — using fallback endpoint");
+        strcpy(server_url, "http://192.168.178.32:8000/process");
+    }
+
     const char *out_path = "/sdcard/audio.raw";
 
-    // allocate buffer on heap (avoid large stack usage)
     const size_t samples_per_read = 1024;
     size_t buffer_bytes = samples_per_read * sizeof(int16_t);
-    int16_t *buffer = (int16_t*) malloc(buffer_bytes);
-    if (!buffer) {
+    int16_t *buffer = (int16_t *)malloc(buffer_bytes);
+    if (!buffer)
+    {
         ESP_LOGE(TAG, "malloc failed");
         vTaskDelete(NULL);
         return;
     }
 
     FILE *f = fopen(out_path, "wb");
-    if (!f) {
+    if (!f)
+    {
         ESP_LOGE(TAG, "Failed to open '%s' for write", out_path);
         free(buffer);
         vTaskDelete(NULL);
@@ -213,38 +250,35 @@ static void main_task(void *pv)
 
     ESP_LOGI(TAG, "🎙️ Recording to %s ...", out_path);
 
-    // Record N reads (adjust for desired duration).
-    // Each read: 1024 samples at 16 kHz => 1024/16000 = 64 ms.
-    const int reads = 75; // ~ 300 * 64ms = ~19s (adjust as needed)
-    for (int i = 0; i < reads; ++i) {
+    const int reads = 75; // ~19s
+    for (int i = 0; i < reads; ++i)
+    {
         size_t bytes_read = 0;
         esp_err_t r = i2s_channel_read(rx_handle, buffer, buffer_bytes, &bytes_read, portMAX_DELAY);
-        if (r != ESP_OK) {
+        if (r != ESP_OK)
+        {
             ESP_LOGE(TAG, "i2s read failed: %s", esp_err_to_name(r));
             break;
         }
-        // write actual bytes read
-        size_t written = fwrite(buffer, 1, bytes_read, f);
-        if (written != bytes_read) {
-            ESP_LOGW(TAG, "Wrote less bytes than read");
-        }
+        fwrite(buffer, 1, bytes_read, f);
     }
 
     fclose(f);
     ESP_LOGI(TAG, "💾 Saved %s", out_path);
 
-    // Upload (blocking)
-    ESP_LOGI(TAG, "📤 Uploading to server...");
-    upload_file_http(SERVER_URL, out_path);
+    ESP_LOGI(TAG, "📤 Uploading to server %s...", server_url);
+    upload_file_http(server_url, out_path);
 
     free(buffer);
     ESP_LOGI(TAG, "main_task finished");
     vTaskDelete(NULL);
 }
 
+// --------------------------------------------------
+// app_main entry
+// --------------------------------------------------
 void app_main(void)
 {
-    // run heavy init/IO in separate task with bigger stack to avoid main stack overflow
-    const int stack_size = 8192; // 8 KB (increase if you still get stack issues)
+    const int stack_size = 8192;
     xTaskCreatePinnedToCore(main_task, "main_task", stack_size, NULL, 5, NULL, tskNO_AFFINITY);
 }
