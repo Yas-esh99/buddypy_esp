@@ -1,5 +1,33 @@
-.pio
-.vscode/.browse.c_cpp.db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch
+# ===============================
+# PlatformIO + ESP-IDF Project
+# ===============================
+
+# PlatformIO build folders
+.pio/
+.pioenvs/
+.piolibdeps/
+.piomemories/
+
+# ESP-IDF build artifacts
+build/
+sdkconfig.old
+sdkconfig.*.old
+
+# Auto-downloaded dependencies
+managed_components/
+dependencies.lock
+
+# Local partition outputs
+partitions/*.bin
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Backup / temporary files
+*.bak
+*.tmp

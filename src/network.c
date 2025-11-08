@@ -19,7 +19,7 @@
 static char device_ip[32] = {0};
 static char server_url[128] = {0};
 
-#define SERVER_IP "192.168.122.32" // your PC's fixed IP
+#define SERVER_IP "192.168.38.32" // your PC's fixed IP
 #define SERVER_PORT 8000
 
 // --------------------------------------------------
@@ -78,19 +78,19 @@ void network_init(void)
 // --------------------------------------------------
 // Upload file using HTTP POST (multipart/form-data)
 // --------------------------------------------------
-esp_err_t network_upload_file(const char *path)
+int network_upload_file(const char *path)
 {
     if (strlen(server_url) == 0)
     {
         ESP_LOGE(TAG, "Server URL not set, cannot upload.");
-        return ESP_FAIL;
+        return -1;
     }
 
     FILE *f = fopen(path, "rb");
     if (!f)
     {
         ESP_LOGE(TAG, "Cannot open file %s", path);
-        return ESP_FAIL;
+        return -1;
     }
 
     fseek(f, 0, SEEK_END);
@@ -123,7 +123,7 @@ esp_err_t network_upload_file(const char *path)
     if (!client)
     {
         fclose(f);
-        return ESP_FAIL;
+        return -1;
     }
 
     char content_type[128];
@@ -137,7 +137,7 @@ esp_err_t network_upload_file(const char *path)
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         fclose(f);
-        return err;
+        return -1;
     }
 
     esp_http_client_write(client, start_part, strlen(start_part));
@@ -161,7 +161,7 @@ esp_err_t network_upload_file(const char *path)
 
     esp_http_client_cleanup(client);
     fclose(f);
-    return ESP_OK;
+    return status;
 }
 
 const char* network_get_server_url(void) {

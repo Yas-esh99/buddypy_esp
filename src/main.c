@@ -37,19 +37,30 @@ static void main_task(void *pv)
     ESP_LOGI(TAG, "Connected to Wi-Fi. Server URL: %s", url);
 
     const char *out_path = "/sdcard/audio.raw";
-    const int record_duration_ms = 10000; // 10 seconds
 
-    // Record audio
-    esp_err_t err = audio_capture_record_to_file(out_path, record_duration_ms);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Audio recording failed.");
-        vTaskDelete(NULL);
-        return;
+    while (1)
+    {
+        // Record audio
+        esp_err_t err = audio_capture_wait_for_speech_and_record(out_path);
+        if (err != ESP_OK)
+        {
+            ESP_LOGI(TAG, "No speech detected, waiting again...");
+            continue;
+        }
+
+        // Upload audio
+        ESP_LOGI(TAG, "📤 Uploading %s to server...", out_path);
+        int status = network_upload_file(out_path);
+        if (status != 200)
+        {
+            ESP_LOGE(TAG, "Upload failed with status %d", status);
+            vTaskDelay(pdMS_TO_TICKS(5000)); // wait before retrying
+        }
+        else
+        {
+            ESP_LOGI(TAG, "✅ Upload successful");
+        }
     }
-
-    // Upload audio
-    ESP_LOGI(TAG, "📤 Uploading %s to server...", out_path);
-    network_upload_file(out_path);
 
     ESP_LOGI(TAG, "main_task finished");
     vTaskDelete(NULL);
