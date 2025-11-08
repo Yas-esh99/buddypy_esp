@@ -54,7 +54,6 @@ static void main_task(void *pv)
         if (status != 200)
         {
             ESP_LOGE(TAG, "Upload failed with status %d", status);
-            vTaskDelay(pdMS_TO_TICKS(5000)); // wait before retrying
         }
         else
         {

@@ -116,7 +116,7 @@ int network_upload_file(const char *path)
     esp_http_client_config_t config = {
         .url = server_url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 15000,
+        .timeout_ms = 60000,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -156,8 +156,27 @@ int network_upload_file(const char *path)
 
     esp_http_client_write(client, end_part, strlen(end_part));
 
+    // This is the crucial step: fetch the response headers from the server.
+    // This blocks until the server has processed the request and sent a response.
+    esp_err_t fetch_err = esp_http_client_fetch_headers(client);
+    if (fetch_err < 0) {
+        ESP_LOGE(TAG, "HTTP client fetch headers failed: %s", esp_err_to_name(fetch_err));
+        esp_http_client_cleanup(client);
+        fclose(f);
+        return -1;
+    }
+
     int status = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "Upload finished, HTTP status: %d", status);
+
+    // Read and print response body
+    char response_buffer[512];
+    int read_len;
+    ESP_LOGI(TAG, "Server Response:");
+    while ((read_len = esp_http_client_read(client, response_buffer, sizeof(response_buffer)-1)) > 0) {
+        response_buffer[read_len] = 0; // Null-terminate the string
+        ESP_LOGI(TAG, "%s", response_buffer);
+    }
 
     esp_http_client_cleanup(client);
     fclose(f);
