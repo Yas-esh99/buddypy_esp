@@ -32,7 +32,7 @@ extern void storage_init(void);
 // ======== WIFI CONFIG =========
 #define WIFI_SSID "M01s"
 #define WIFI_PASS "9924760032"
-#define SERVER_URL "http://192.168.34.32:8000/process"
+#define SERVER_URL "http://192.168.178.32:8000/process"
 
 // global i2s handle
 static i2s_chan_handle_t rx_handle = NULL;
@@ -102,28 +102,49 @@ static esp_err_t upload_file_http(const char *url, const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
-        ESP_LOGE(TAG, "upload_file_http: cannot open file %s", path);
+        ESP_LOGE(TAG, "Cannot open file %s", path);
         return ESP_FAIL;
     }
 
     fseek(f, 0, SEEK_END);
-    long size = ftell(f);
+    long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
+
+    const char *boundary = "----ESP32FormBoundary";
+    char start_part[512];
+    char end_part[128];
+
+    // ✅ add leading CRLF and correct structure
+    snprintf(start_part, sizeof(start_part),
+             "--%s\r\n"
+             "Content-Disposition: form-data; name=\"audio\"; filename=\"audio.raw\"\r\n"
+             "Content-Type: application/octet-stream\r\n"
+             "\r\n",  // blank line after headers
+             boundary);
+
+    snprintf(end_part, sizeof(end_part),
+             "\r\n--%s--\r\n", boundary); // CRLF before and after boundary
+
+    long total_size = strlen(start_part) + file_size + strlen(end_part);
 
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 10000,
+        .timeout_ms = 15000,
     };
+
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
         fclose(f);
         return ESP_FAIL;
     }
 
-    // set header and start request
-    esp_http_client_set_header(client, "Content-Type", "audio/wav");
-    esp_err_t err = esp_http_client_open(client, size);
+    char content_type[128];
+    snprintf(content_type, sizeof(content_type),
+             "multipart/form-data; boundary=%s", boundary);
+    esp_http_client_set_header(client, "Content-Type", content_type);
+
+    esp_err_t err = esp_http_client_open(client, total_size);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
@@ -131,21 +152,26 @@ static esp_err_t upload_file_http(const char *url, const char *path)
         return err;
     }
 
+    // send header part
+    esp_http_client_write(client, start_part, strlen(start_part));
+
+    // send file data
     uint8_t buffer[1024];
     size_t read;
     while ((read = fread(buffer, 1, sizeof(buffer), f)) > 0) {
-        int written = esp_http_client_write(client, (const char*)buffer, read);
+        int written = esp_http_client_write(client, (const char *)buffer, read);
         if (written < 0) {
             ESP_LOGE(TAG, "esp_http_client_write failed");
             break;
         }
     }
 
-    // finalise
+    // send closing boundary
+    esp_http_client_write(client, end_part, strlen(end_part));
+
     int status = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "Upload finished, HTTP status: %d", status);
 
-    esp_http_client_fetch_headers(client);
     esp_http_client_cleanup(client);
     fclose(f);
     return ESP_OK;
@@ -160,11 +186,12 @@ static void main_task(void *pv)
     init_i2s();
     init_wifi();
 
+    ESP_LOGI(TAG, "Initialization done, starting recording...");
     // wait a bit for WiFi
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     // create path on SD card
-    const char *out_path = "/sdcard/voice.raw";
+    const char *out_path = "/sdcard/audio.raw";
 
     // allocate buffer on heap (avoid large stack usage)
     const size_t samples_per_read = 1024;
@@ -188,7 +215,7 @@ static void main_task(void *pv)
 
     // Record N reads (adjust for desired duration).
     // Each read: 1024 samples at 16 kHz => 1024/16000 = 64 ms.
-    const int reads = 300; // ~ 300 * 64ms = ~19s (adjust as needed)
+    const int reads = 75; // ~ 300 * 64ms = ~19s (adjust as needed)
     for (int i = 0; i < reads; ++i) {
         size_t bytes_read = 0;
         esp_err_t r = i2s_channel_read(rx_handle, buffer, buffer_bytes, &bytes_read, portMAX_DELAY);
